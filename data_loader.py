@@ -33,10 +33,12 @@ class DataLoader:
         y = data["goal"]
         return X, y
 
-    def get_train_test_df(self):
+    def get_train_test_data(self):
         return (self.df_train, self.y_train,
-                self.df_test, self.y_test)
+                self.df_test, self.y_test,
+                self.train_ids, self.test_ids)
 
-    def get_train_test_df_norm(self):
+    def get_train_test_data_norm(self):
         return (self.df_train_norm, self.y_train,
-                self.df_test_norm, self.y_test)
+                self.df_test_norm, self.y_test,
+                self.train_ids, self.test_ids)

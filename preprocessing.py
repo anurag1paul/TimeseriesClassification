@@ -1,16 +1,20 @@
+import os
+
 from pandas import read_excel
 from sklearn.model_selection import train_test_split
 
 
-def prepare_data(excel_file, train_file, test_file, test_size=0.2):
+def prepare_data(excel_file, train_file, test_file, test_size=0.2, gen=True):
     """
-    Loads the given dataset, renames columns and writes train and test datsets
+    Loads the given dataset, renames columns and writes train and test datasets
     :param excel_file: name of the raw data set
     :param train_file: name of the train dataset
     :param test_file: name of the test dataset
     :param test_size: size of the test set
     :return: None
     """
+    if os.path.isfile(train_file) and os.path.isfile(test_file) and not gen:
+        return
 
     df = read_excel(excel_file)
     df.rename(columns={"ID_TestSet": "id"}, inplace=True)

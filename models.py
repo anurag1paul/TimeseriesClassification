@@ -1,13 +1,16 @@
-import warnings
+import pickle
 from abc import ABC, abstractmethod
+from subprocess import call
 
 import numpy as np
+import pandas as pd
 from keras import Sequential
-from keras.layers import ConvLSTM2D, Dropout, Flatten, Dense, LSTM, TimeDistributed, Conv1D, MaxPooling1D
+from keras.layers import ConvLSTM2D, Dropout, Flatten, Dense, LSTM, TimeDistributed, Conv1D, MaxPooling1D, warnings, \
+    BatchNormalization, Activation, regularizers
 from keras.utils import to_categorical
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix
-from tsfresh import extract_features, select_features
+from tsfresh import extract_features
 from tsfresh.feature_extraction import ComprehensiveFCParameters
 from tsfresh.utilities.dataframe_functions import impute
 from xgboost import XGBClassifier
@@ -24,29 +27,26 @@ class BaseModel(ABC):
         self.best_score = 0
 
     @abstractmethod
-    def _predict(self, model, testX, testy):
+    def _predict(self, testX):
         """
-        Predict using the provided model
-        :param model: trained ML model
+        Predict using the best model
         :param testX: test datset
-        :param testy: test target values
-        :return: predicted values, score
+        :return: predicted values
         """
         pass
 
-    def predict(self, testx=None, testy=None):
+    def predict(self, testx=None):
         """
         Predict using the best_model after training one model
-        :return: predicted values, score
+        :return: predicted values
         """
         if self.best_model is None:
             raise Exception("Train a model first")
 
-        if testx is None or testy is None:
+        if testx is None:
             testx = self.test_X
-            testy = self.test_y
 
-        return self._predict(self.best_model, testx, testy)
+        return self._predict(testx)
 
     @abstractmethod
     def evaluate(self):
@@ -64,7 +64,7 @@ class BaseModel(ABC):
         mu = np.mean(scores)
         sigma = np.std(scores)
         best_model = models[np.argmax(scores)]
-        best_score = np.max(self.scores)
+        best_score = max(scores)
         return best_model, best_score, mu, sigma
 
     def get_best_model(self):
@@ -79,24 +79,33 @@ class BaseModel(ABC):
         Use Sklearn's function to generate confusion matrix for the test data
         :return: confusion matrix
         """
-        y_pred, _ = self.predict()
-        return confusion_matrix(self.test_y, y_pred)
+        return confusion_matrix(self.test_y, self.predict())
 
 
 # Model using Hand-crafted features and traditional ML models
 class FeatureEngineeredModel(BaseModel):
 
-    def __init__(self, train_X, train_y, test_X, test_y):
+    def __init__(self, train_X, train_y, test_X, test_y, train_ids, test_ids):
         super().__init__(test_X, test_y)
-        self.extraction_settings = ComprehensiveFCParameters()
-        new_train_X = self.generate_features(train_X)
-        new_test_X = self.generate_features(test_X)
         self.train_y = train_y
-        relevant_features = self.select_features(new_train_X, self.train_y)
-        self.train_X = new_train_X[relevant_features]
-        self.test_X = new_test_X[relevant_features]
-        self.n_estimators = 40
 
+        self.extraction_settings = ComprehensiveFCParameters()
+        X = self.generate_features(pd.concat([train_X, test_X]))
+
+        new_train_X = X.loc[train_ids]
+        new_test_X = X.loc[test_ids]
+
+        relevant_features = self.select_features(new_train_X, self.train_y)
+        print("Selected Features: {}/{}".format(len(relevant_features), X.shape[1]))
+
+        if len(relevant_features) > 10:
+            self.train_X = new_train_X[relevant_features]
+            self.test_X = new_test_X[relevant_features]
+        else:
+            self.train_X = new_train_X
+            self.test_X = new_test_X
+
+        self.n_estimators = 40
         self.model_names = ["Random Forest", "XGBoost"]
 
     def generate_features(self, df):
@@ -106,7 +115,9 @@ class FeatureEngineeredModel(BaseModel):
         :return: dataframe with generated features
         """
         df = df.reset_index()
-        return extract_features(df, column_id="id", impute_function=impute,
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            return extract_features(df, column_id="id", impute_function=impute,
                                 default_fc_parameters=self.extraction_settings)
 
     def select_features(self, X, y):
@@ -116,28 +127,27 @@ class FeatureEngineeredModel(BaseModel):
         """
         # remove features that are constant
         X = X.loc[:, (X != X.iloc[0]).any()]
-        relevant_features = set()
+        data = {"X": X, "y": y}
+        with open("data.pkl", "wb") as data_file:
+            pickle.dump(data, data_file)
 
-        for label in y.unique():
-            y_binary = np.array(y == label)
-            with warnings.catch_warnings():
-                warnings.simplefilter("ignore")
-                X_filtered = select_features(X, y_binary)
-                print("Number of relevant features for class {}: {}/{}".format(label, X_filtered.shape[1], X.shape[1]))
-                relevant_features = relevant_features.union(set(X_filtered.columns))
+        call(["python3", "select_features.py"])
+        with open("rel_features.pkl", "rb") as rel_features:
+            relevant_features = pickle.load(rel_features)
 
         return list(relevant_features)
 
-    def _predict(self, model, testX, testy):
-        pred_y = model.predict(testX)
-        return pred_y, model.score(testy, pred_y)
+    def _predict(self, testX):
+        return self.best_model.predict(testX)
 
     def evaluate(self):
-        models = []
-        scores = []
         num_estimators = [10, 20, 30, 40, 50, 100, 150, 250]
 
-        for algo in [RandomForestClassifier, XGBClassifier]:
+        for i, algo in enumerate([RandomForestClassifier, XGBClassifier]):
+
+            print("Training {}". format(self.model_names[i]))
+            models = []
+            scores = []
 
             for n_estimators in num_estimators:
                 self.n_estimators = n_estimators
@@ -147,7 +157,7 @@ class FeatureEngineeredModel(BaseModel):
                 scores.append(score)
 
             best_model, best_score, mu, sigma = self.summarize_results(models, np.array(scores))
-            print("Accuracy: {}% (+/-{}) (95% confidence interval)".format(round(mu, 3), 2 * round(sigma, 3)))
+            print("Accuracy: {}% with n_estimators={}".format(best_score, best_model.n_estimators))
             self.models.append(best_model)
             self.scores.append(best_score)
             if best_score > self.best_score:
@@ -155,26 +165,31 @@ class FeatureEngineeredModel(BaseModel):
                 self.best_score = best_score
 
         self.n_estimators = self.best_model.n_estimators
-        return self.best_model, self.best_score, mu, sigma
+        return self.best_model, self.best_score
 
 
 # Deep Learning Models using LSTM, CNN-1D-LSTM, CNN-2D-LSTM
 class DeepLearningModel(BaseModel):
 
-    def __init__(self, train_X, train_y, test_X, test_y, train_ids, test_ids):
+    def __init__(self, train_X, train_y, test_X, test_y, train_ids, test_ids, debug=False):
         super().__init__(test_X, test_y)
-        self.n_features = len(self.train_X.columns)
-        self.n_sample_rows = len(self.train_X.loc[train_ids[0]])
+        self.n_features = len(train_X.columns)
+        self.n_sample_rows = len(train_X.loc[train_ids[0]])
 
         self.train_X = self.reformat_data(train_X, train_ids)
         self.test_X = self.reformat_data(test_X, test_ids)
 
         self.train_y = to_categorical(train_y)
-        self.train_X = to_categorical(test_y)
+        self.test_y_cat = to_categorical(test_y)
 
         # define model
         self.model_names = ["LSTM", "CNN1D-LSTM", "CNN2D-LSTM"]
-        self.verbose, self.epochs, self.batch_size = 0, 25, 16
+        self.best_model_name = None
+        self.verbose, self.epochs, self.batch_size = 0, 30, 16
+        self.debug=debug
+
+        # for CNN models
+        self.n_steps, self.n_length = 1, 89
 
     def reformat_data(self, df, ids):
         """
@@ -195,41 +210,46 @@ class DeepLearningModel(BaseModel):
 
         n_timesteps, n_features, n_outputs = trainX.shape[1], trainX.shape[2], trainy.shape[1]
         model = Sequential()
-        model.add(LSTM(100, input_shape=(n_timesteps,n_features)))
+        model.add(LSTM(150, kernel_regularizer=regularizers.l2(0.01), input_shape=(n_timesteps, n_features)))
         model.add(Dropout(0.5))
-        model.add(Dense(100, activation='relu'))
         model.add(Dense(n_outputs, activation='softmax'))
         model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
         # fit network
         model.fit(trainX, trainy, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
         # evaluate model
         _, accuracy = model.evaluate(testX, testy, batch_size=self.batch_size, verbose=0)
+        if self.debug:
+            _, train_accuracy = model.evaluate(trainX, trainy, batch_size=self.batch_size, verbose=0)
+            print("Train Acc:{} Test Acc:{}".format(train_accuracy, accuracy))
         return model, accuracy
 
     def cnn1d_lstm_model(self, trainX, trainy, testX, testy):
 
-        n_timesteps, n_features, n_outputs = trainX.shape[1], trainX.shape[2], trainy.shape[1]
+        n_timesteps, n_outputs = trainX.shape[1], trainy.shape[1]
 
         # reshape data into time steps of sub-sequences
-        n_steps, n_length = 1, 89
-        trainX = trainX.reshape((trainX.shape[0], n_steps, n_length, self.n_features))
-        testX = testX.reshape((testX.shape[0], n_steps, n_length, self.n_features))
+        trainX = trainX.reshape((trainX.shape[0], self.n_steps, self.n_length, self.n_features))
+        testX = testX.reshape((testX.shape[0], self.n_steps, self.n_length, self.n_features))
 
         # define model
         model = Sequential()
-        model.add(TimeDistributed(Conv1D(filters=32, kernel_size=3, activation='relu'), input_shape=(None,n_length,n_features)))
-        model.add(TimeDistributed(Conv1D(filters=64, kernel_size=3, activation='relu')))
+        model.add(TimeDistributed(Conv1D(filters=24, kernel_size=3, kernel_regularizer=regularizers.l2(0.01)),
+                                  input_shape=(None, self.n_length, self.n_features)))
+        model.add(TimeDistributed(BatchNormalization()))
+        model.add(TimeDistributed(Activation("relu")))
         model.add(TimeDistributed(MaxPooling1D(pool_size=2)))
         model.add(TimeDistributed(Flatten()))
-        model.add(LSTM(100))
+        model.add(LSTM(100, kernel_regularizer=regularizers.l2(0.01)))
         model.add(Dropout(0.5))
-        model.add(Dense(100, activation='relu'))
         model.add(Dense(n_outputs, activation='softmax'))
         model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
         # fit network
         model.fit(trainX, trainy, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
         # evaluate model
         _, accuracy = model.evaluate(testX, testy, batch_size=self.batch_size, verbose=0)
+        if self.debug:
+            _, train_accuracy = model.evaluate(trainX, trainy, batch_size=self.batch_size, verbose=0)
+            print("Train Acc:{} Test Acc:{}".format(train_accuracy, accuracy))
         return model, accuracy
 
     def cnn2d_lstm_model(self, trainX, trainy, testX, testy):
@@ -237,47 +257,61 @@ class DeepLearningModel(BaseModel):
         n_timesteps, n_outputs = trainX.shape[1], trainy.shape[1]
 
         # reshape into subsequences (samples, time steps, rows, cols, channels)
-        n_steps, n_length = 1, 89
-        trainX = trainX.reshape((trainX.shape[0], n_steps, 1, n_length, self.n_features))
-        testX = testX.reshape((testX.shape[0], n_steps, 1, n_length, self.n_features))
+        trainX = trainX.reshape((trainX.shape[0], self.n_steps, 1, self.n_length, self.n_features))
+        testX = testX.reshape((testX.shape[0], self.n_steps, 1, self.n_length, self.n_features))
 
         # define model
         model = Sequential()
-        model.add(ConvLSTM2D(filters=128, kernel_size=(1,3), activation='relu',
-                             input_shape=(n_steps, 1, n_length, self.n_features)))
+        model.add(ConvLSTM2D(filters=20, kernel_size=(1,3), kernel_regularizer=regularizers.l2(0.01),
+                             input_shape=(self.n_steps, 1, self.n_length, self.n_features)))
+        model.add(BatchNormalization())
+        model.add(Activation("relu"))
         model.add(Dropout(0.5))
         model.add(Flatten())
-        model.add(Dense(100, activation='relu'))
         model.add(Dense(n_outputs, activation='softmax'))
         model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
         # fit network
         model.fit(trainX, trainy, epochs=self.epochs, batch_size=self.batch_size, verbose=self.verbose)
         # evaluate model
         _, accuracy = model.evaluate(testX, testy, batch_size=self.batch_size, verbose=0)
-        return accuracy
+        if self.debug:
+            _, train_accuracy = model.evaluate(trainX, trainy, batch_size=self.batch_size, verbose=0)
+            print("Train Acc:{} Test Acc:{}".format(train_accuracy, accuracy))
+        return model, accuracy
 
-    def _predict(self, model, testX, testy):
-        pred_y = model.predict(testX, batch_size=self.batch_size, verbose=0)
-        _, accuracy = model.evaluate(testX, testy, batch_size=self.batch_size, verbose=0)
-        return pred_y, accuracy
+    def _predict(self, testX):
+
+        if self.best_model_name == "CNN1D-LSTM":
+            testX = testX.reshape((testX.shape[0], self.n_steps, self.n_length, self.n_features))
+
+        elif self.best_model_name == "CNN2D-LSTM":
+            testX = testX.reshape((testX.shape[0], self.n_steps, 1, self.n_length, self.n_features))
+
+        y_pred = [np.argmax(l) for l in self.best_model.predict(testX, batch_size=self.batch_size, verbose=0)]
+
+        return y_pred
 
     def evaluate(self):
-        models = []
-        scores = []
+        n_reps = 5
 
-        for algo in [self.simple_lstm_model, self.cnn1d_lstm_model, self. cnn2d_lstm_model]:
+        for i, algo in enumerate([self.simple_lstm_model, self.cnn1d_lstm_model, self.cnn2d_lstm_model]):
 
-            for r in range(10):
-                model, score = algo(self.train_X, self.train_y, self.test_X, self.test_y)
+            print("Training {}". format(self.model_names[i]))
+            models = []
+            scores = []
+
+            for r in range(n_reps):
+                model, score = algo(self.train_X, self.train_y, self.test_X, self.test_y_cat)
                 models.append(model)
-                scores.append(score)
+                scores.append(score * 100)
 
             best_model, best_score, mu, sigma = self.summarize_results(models, np.array(scores))
-            print("Accuracy: {}% (+/-{}) (95% confidence interval)".format(round(mu, 3), 2 * round(sigma, 3)))
+            print("Accuracy: Max:{}% Avg:{}% (+/-{})".format(best_score, round(mu, 3), round(sigma, 3)))
             self.models.append(best_model)
             self.scores.append(best_score)
             if best_score > self.best_score:
                 self.best_model = best_model
                 self.best_score = best_score
+                self.best_model_name = self.model_names[i]
 
-        return self.best_model, self.best_score, mu, sigma
+        return self.best_model, self.best_score
