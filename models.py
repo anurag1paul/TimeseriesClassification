@@ -107,6 +107,7 @@ class FeatureEngineeredModel(BaseModel):
 
         self.n_estimators = 40
         self.model_names = ["Random Forest", "XGBoost"]
+        self.best_model_name = None
 
     def generate_features(self, df):
         """
@@ -163,6 +164,7 @@ class FeatureEngineeredModel(BaseModel):
             if best_score > self.best_score:
                 self.best_model = best_model
                 self.best_score = best_score
+                self.best_model_name = self.model_names[i]
 
         self.n_estimators = self.best_model.n_estimators
         return self.best_model, self.best_score
