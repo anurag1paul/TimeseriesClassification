@@ -2,7 +2,7 @@
 
 ### Getting started
 
-####Install all dependencies:
+#### Install all dependencies:
 - `pip install -r requirements.txt`
 - open the Project.ipynb, set the dataset variable and run the notebook
 
