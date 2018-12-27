@@ -187,11 +187,11 @@ class DeepLearningModel(BaseModel):
         # define model
         self.model_names = ["LSTM", "CNN1D-LSTM", "CNN2D-LSTM"]
         self.best_model_name = None
-        self.verbose, self.epochs, self.batch_size = 0, 30, 16
+        self.verbose, self.epochs, self.batch_size = 0, 25, 32
         self.debug=debug
 
         # for CNN models
-        self.n_steps, self.n_length = 1, 89
+        self.n_steps, self.n_length = 3, 30
 
     def reformat_data(self, df, ids):
         """
@@ -200,11 +200,12 @@ class DeepLearningModel(BaseModel):
         :param ids: unique timeseries ids
         :return: reformatted data
         """
-        data = np.zeros((len(ids), self.n_sample_rows, self.n_features))
+        data = np.zeros((len(ids), self.n_sample_rows + 1, self.n_features))
         idx = 0
         for i in ids:
             sample = df.loc[i]
-            data[idx] = sample.values
+            data[idx, 0:89, :] = sample.values
+            data[idx, 89, :] = np.mean(sample.values)
             idx += 1
         return data
 
@@ -212,7 +213,7 @@ class DeepLearningModel(BaseModel):
 
         n_timesteps, n_features, n_outputs = trainX.shape[1], trainX.shape[2], trainy.shape[1]
         model = Sequential()
-        model.add(LSTM(150, kernel_regularizer=regularizers.l2(0.01), input_shape=(n_timesteps, n_features)))
+        model.add(LSTM(100, kernel_regularizer=regularizers.l2(0.01), input_shape=(n_timesteps, n_features)))
         model.add(Dropout(0.5))
         model.add(Dense(n_outputs, activation='softmax'))
         model.compile(loss='categorical_crossentropy', optimizer='adam', metrics=['accuracy'])
@@ -235,7 +236,7 @@ class DeepLearningModel(BaseModel):
 
         # define model
         model = Sequential()
-        model.add(TimeDistributed(Conv1D(filters=24, kernel_size=3, kernel_regularizer=regularizers.l2(0.01)),
+        model.add(TimeDistributed(Conv1D(filters=32, kernel_size=3, kernel_regularizer=regularizers.l2(0.01)),
                                   input_shape=(None, self.n_length, self.n_features)))
         model.add(TimeDistributed(BatchNormalization()))
         model.add(TimeDistributed(Activation("relu")))
@@ -264,7 +265,7 @@ class DeepLearningModel(BaseModel):
 
         # define model
         model = Sequential()
-        model.add(ConvLSTM2D(filters=20, kernel_size=(1,3), kernel_regularizer=regularizers.l2(0.01),
+        model.add(ConvLSTM2D(filters=32, kernel_size=(1,3), kernel_regularizer=regularizers.l2(0.01),
                              input_shape=(self.n_steps, 1, self.n_length, self.n_features)))
         model.add(BatchNormalization())
         model.add(Activation("relu"))
@@ -294,7 +295,7 @@ class DeepLearningModel(BaseModel):
         return y_pred
 
     def evaluate(self):
-        n_reps = 5
+        n_reps = 10
 
         for i, algo in enumerate([self.simple_lstm_model, self.cnn1d_lstm_model, self.cnn2d_lstm_model]):
 

@@ -46,7 +46,7 @@ def plot_class_distribution(classes):
 
 def plot_best_accuracies(model_names, accuracies):
     """
-    Plotd a bar plot of model accuracies
+    Plots a bar plot of model accuracies
     :param model_names: list of model names
     :param accuracies: list of best accuracies
     :return: None
