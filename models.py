@@ -10,6 +10,7 @@ from keras.layers import ConvLSTM2D, Dropout, Flatten, Dense, LSTM, TimeDistribu
 from keras.utils import to_categorical
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix
+from sklearn.model_selection import GridSearchCV
 from tsfresh import extract_features
 from tsfresh.feature_extraction import ComprehensiveFCParameters
 from tsfresh.utilities.dataframe_functions import impute
@@ -105,7 +106,6 @@ class FeatureEngineeredModel(BaseModel):
             self.train_X = new_train_X
             self.test_X = new_test_X
 
-        self.n_estimators = 40
         self.model_names = ["Random Forest", "XGBoost"]
         self.best_model_name = None
 
@@ -142,31 +142,27 @@ class FeatureEngineeredModel(BaseModel):
         return self.best_model.predict(testX)
 
     def evaluate(self):
-        num_estimators = [10, 20, 30, 40, 50, 100, 150, 250]
+        param_grid = {"n_estimators": [10, 20, 50, 100, 150, 250],
+                      'max_features': ['auto', 'sqrt', 'log2']}
 
         for i, algo in enumerate([RandomForestClassifier, XGBClassifier]):
 
             print("Training {}". format(self.model_names[i]))
-            models = []
-            scores = []
 
-            for n_estimators in num_estimators:
-                self.n_estimators = n_estimators
-                model = algo(n_estimators=self.n_estimators).fit(self.train_X, self.train_y)
-                score = model.score(self.test_X, self.test_y) * 100.0
-                models.append(model)
-                scores.append(score)
+            best_model = GridSearchCV(estimator=algo(), param_grid=param_grid, cv=3, iid=True)
+            best_model.fit(self.train_X, self.train_y)
+            best_score = best_model.score(self.test_X, self.test_y) * 100.0
 
-            best_model, best_score, mu, sigma = self.summarize_results(models, np.array(scores))
-            print("Accuracy: {}% with n_estimators={}".format(best_score, best_model.n_estimators))
+            print("Accuracy: {}%".format(best_score))
+
             self.models.append(best_model)
             self.scores.append(best_score)
+
             if best_score > self.best_score:
                 self.best_model = best_model
                 self.best_score = best_score
                 self.best_model_name = self.model_names[i]
 
-        self.n_estimators = self.best_model.n_estimators
         return self.best_model, self.best_score
 
 
